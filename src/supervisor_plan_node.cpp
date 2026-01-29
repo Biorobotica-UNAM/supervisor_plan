@@ -15,33 +15,33 @@ using namespace std;
 class SupervisorPlanNode : public rclcpp::Node {
 public:
     SupervisorPlanNode() : Node("plan_manager_node") {
-        RCLCPP_INFO(this->get_logger(), "Nodo plan_manager_node iniciado");
+        RCLCPP_INFO(this->get_logger(), "plan_manager_node started");
 
-        // Suscriptor para recibir planes completos
+        // Subscriber to receive full plans from CLIPS
         plan_sub_ = this->create_subscription<std_msgs::msg::String>(
             "/clips/results", 10,
             std::bind(&SupervisorPlanNode::planCallback, this, std::placeholders::_1)
         );
 
-        // Servicio para que el robot solicite instrucciones
+        // Service for the robot to request the next instruction
         service_ = this->create_service<std_srvs::srv::Trigger>(
             "/request_instruction",
             std::bind(&SupervisorPlanNode::handleInstructionRequest, this,
                      std::placeholders::_1, std::placeholders::_2));
 
-        // Publicador para enviar instrucciones
+        // Publisher to send instructions
         publisher_ = this->create_publisher<std_msgs::msg::String>("/instruction_msg", 10);
 
-        // Inicializar estado del plan
+        // Initialize plan state
         current_plan_index_ = -1;
         instruction_counter_ = 0;
         has_active_plan_ = false;
         
-        RCLCPP_INFO(this->get_logger(), "Plan Manager inicializado");
+        RCLCPP_INFO(this->get_logger(), "Supervisor Plan initialized");
     }
 
 private:
-    // Variables para almacenar el plan
+    // Variables to store the current plan
     std::vector<std::string> current_plan_;
     int current_plan_index_;
     int instruction_counter_;
@@ -52,18 +52,18 @@ private:
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
 
     // --------------------------
-    // CALLBACK DEL TOPICO CLIPS
+    // CLIPS TOPIC CALLBACK
     // --------------------------
     void planCallback(const std_msgs::msg::String::SharedPtr msg) {
         std::string full_plan = msg->data;
         if (full_plan.empty()) {
-            RCLCPP_WARN(this->get_logger(), "Plan vacío recibido");
+            RCLCPP_WARN(this->get_logger(), "Empty plan received");
             return;
         }
 
-        RCLCPP_INFO(this->get_logger(), "Plan recibido: %s", full_plan.c_str());
+        RCLCPP_INFO(this->get_logger(), "Plan received: %s", full_plan.c_str());
 
-        // Limpiar plan anterior
+        // Clear previous plan
         current_plan_.clear();
         
         std::vector<std::string> lines;
@@ -71,91 +71,101 @@ private:
 
         for (const string& line : lines) {
             if (line.find("Paso") != string::npos) {
-                // Es una línea de paso del plan
+                // This line corresponds to a plan step
                 vector<string> tokens;
                 boost::algorithm::split(tokens, line, boost::algorithm::is_any_of(" "));
                 
-                if (tokens.size() >= 3) {
-                    // Reconstruir la instrucción (omitir "Paso X:")
+                if (tokens.size() > 5) {
+                    // Rebuild instruction (skip "Paso X:")
                     string instruction = "";
                     bool start_collecting = false;
                     
                     for (size_t i = 0; i < tokens.size(); i++) {                        
-                        if (start_collecting) {
+                        if (start_collecting)
+                        {
                             instruction += tokens[i];
                             if (i < tokens.size() - 1) instruction += " ";
+                            if (tokens[i].find("Justina") != string::npos) i++;
+
                         }
-                        // Comenzar a recolectar después del número de paso
-                        if (i >= 1 && tokens[i].find(":") != string::npos) {
+                        // Start collecting after the step number
+                        if (i >= 1 && tokens[i].find(":") != string::npos)
+                        {
                             start_collecting = true;
                         }
                     }
                     
                     if (!instruction.empty()) {
                         current_plan_.push_back(instruction);
-                        RCLCPP_DEBUG(this->get_logger(), "Instrucción añadida: %s", instruction.c_str());
+                        RCLCPP_DEBUG(this->get_logger(), "Instruction added: %s", instruction.c_str());
                     }
-                }
+                }                
             }
         }
 
-        // Configurar estado del robot si se recibió un plan válido
+        // Configure robot state if a valid plan was received
         if (!current_plan_.empty()) {
             current_plan_index_ = 0;
             instruction_counter_ = 0;
             has_active_plan_ = true;
             
-            RCLCPP_INFO(this->get_logger(), "Plan procesado: %zu instrucciones recibidas", current_plan_.size());
-            RCLCPP_INFO(this->get_logger(), "Plan listo para ejecución");
+            RCLCPP_INFO(this->get_logger(),
+                        "Plan processed: %zu instructions received",
+                        current_plan_.size());
+            RCLCPP_INFO(this->get_logger(), "Plan ready for execution");
         } else {
-            RCLCPP_WARN(this->get_logger(), "Plan recibido pero no se encontraron instrucciones válidas");
+            RCLCPP_WARN(this->get_logger(),
+                        "Plan received but no valid instructions were found");
         }
     }
 
     // --------------------------
-    // MANEJO DEL SERVICIO
+    // SERVICE HANDLER
     // --------------------------
     void handleInstructionRequest(
         const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
         std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
         
-        (void)request;  // No se usa el request en este caso
+        (void)request;  // Request is not used
 
-        RCLCPP_INFO(this->get_logger(), "Solicitud de instrucción recibida");
+        RCLCPP_INFO(this->get_logger(), "Instruction request received");
 
-        // Verificar si hay un plan activo
+        // Check if there is an active plan
         if (!has_active_plan_ || current_plan_.empty()) {
-            response->success = false;
-            response->message = "NoPlanAssigned";
-            RCLCPP_WARN(this->get_logger(), "No hay plan activo para ejecutar");
+            RCLCPP_WARN(this->get_logger(), "NoPlanAssigned: send a default instruction for wait for the keyword"); 
+            response->message = "Justina listen keyword";
+            response->success = true;
             return;
         }
 
-        // Obtener la siguiente instrucción
+        // Get next instruction
         std::string instruction = current_plan_[instruction_counter_];
         
-        // Incrementar contador para la próxima solicitud
+        // Increment counter for next request
         instruction_counter_++;
         
-        // Publicar en el tópico (opcional)
+        // Publish instruction on topic (optional)
         auto instruction_msg = std_msgs::msg::String();
         instruction_msg.data = instruction;
         publisher_->publish(instruction_msg);
         
-        // Configurar respuesta del servicio
+        // Fill service response
         response->success = true;
         response->message = instruction;
         
-        RCLCPP_INFO(this->get_logger(), "Instrucción %d/%zu enviada: %s",
-                   instruction_counter_, current_plan_.size(), instruction.c_str());
+        RCLCPP_INFO(this->get_logger(),
+                    "Instruction %d/%zu sent: %s",
+                    instruction_counter_,
+                    current_plan_.size(),
+                    instruction.c_str());
         
-        // Verificar si se completó el plan
+        // Check if plan execution is complete
         if (instruction_counter_ >= (int)current_plan_.size()) {
             has_active_plan_ = false;
-            RCLCPP_INFO(this->get_logger(), "Última instrucción del plan enviada");
+            RCLCPP_INFO(this->get_logger(),
+                        "Last instruction of the plan has been sent");
         }
     }
-    
 };
 
 // --------------------------
@@ -165,11 +175,13 @@ int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<SupervisorPlanNode>();
     
-    RCLCPP_INFO(node->get_logger(), "Plan Manager Node iniciado");
-    RCLCPP_INFO(node->get_logger(), "Esperando planes en /clips/results");
-    RCLCPP_INFO(node->get_logger(), "Servicio disponible en /request_instruction");
+    RCLCPP_INFO(node->get_logger(), "Plan Manager Node started");
+    RCLCPP_INFO(node->get_logger(), "Waiting for plans on /clips/results");
+    RCLCPP_INFO(node->get_logger(), "Service available at /request_instruction");
     
     rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
 }
+
+
