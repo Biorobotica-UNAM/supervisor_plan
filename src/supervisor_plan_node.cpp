@@ -14,13 +14,19 @@ using namespace std;
 
 class SupervisorPlanNode : public rclcpp::Node {
 public:
-    SupervisorPlanNode() : Node("plan_manager_node") {
-        RCLCPP_INFO(this->get_logger(), "plan_manager_node started");
+    SupervisorPlanNode() : Node("supervisor_plan_node") {
+        RCLCPP_INFO(this->get_logger(), "supervisor_plan_node started");
 
         // Subscriber to receive full plans from CLIPS
         plan_sub_ = this->create_subscription<std_msgs::msg::String>(
-            "/clips/results", 10,
+            "/clips/clips/results", 10,
             std::bind(&SupervisorPlanNode::planCallback, this, std::placeholders::_1)
+        );
+
+        // Subscriber to receive instruction overrides
+        instruction_override_sub_ = this->create_subscription<std_msgs::msg::String>(
+            "/supervisor_manager/instruction", 10,
+            std::bind(&SupervisorPlanNode::instructionOverrideCallback, this, std::placeholders::_1)
         );
 
         // Service for the robot to request the next instruction
@@ -36,6 +42,7 @@ public:
         current_plan_index_ = -1;
         instruction_counter_ = 0;
         has_active_plan_ = false;
+        override_instruction_ = "";
         
         RCLCPP_INFO(this->get_logger(), "Supervisor Plan initialized");
     }
@@ -46,10 +53,24 @@ private:
     int current_plan_index_;
     int instruction_counter_;
     bool has_active_plan_;
+    std::string override_instruction_;
     
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr plan_sub_;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr instruction_override_sub_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr service_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
+
+    // --------------------------
+    // INSTRUCTION OVERRIDE CALLBACK
+    // --------------------------
+    void instructionOverrideCallback(const std_msgs::msg::String::SharedPtr msg) {
+        if (!msg->data.empty()) {
+            override_instruction_ = msg->data;
+            RCLCPP_INFO(this->get_logger(), 
+                        "Override instruction received: %s", 
+                        override_instruction_.c_str());
+        }
+    }
 
     // --------------------------
     // CLIPS TOPIC CALLBACK
@@ -130,6 +151,26 @@ private:
 
         RCLCPP_INFO(this->get_logger(), "Instruction request received");
 
+        // Check if there's an override instruction
+        if (!override_instruction_.empty()) {
+            std::string instruction = override_instruction_;
+            override_instruction_ = "";  // Clear after using
+            
+            // Publish instruction on topic
+            auto instruction_msg = std_msgs::msg::String();
+            instruction_msg.data = instruction;
+            publisher_->publish(instruction_msg);
+            
+            // Fill service response
+            response->success = true;
+            response->message = instruction;
+            
+            RCLCPP_INFO(this->get_logger(),
+                        "Override instruction sent: %s",
+                        instruction.c_str());
+            return;
+        }
+
         // Check if there is an active plan
         if (!has_active_plan_ || current_plan_.empty()) {
             RCLCPP_WARN(this->get_logger(), "NoPlanAssigned: send a default instruction for wait for the keyword"); 
@@ -177,11 +218,10 @@ int main(int argc, char **argv) {
     
     RCLCPP_INFO(node->get_logger(), "Plan Manager Node started");
     RCLCPP_INFO(node->get_logger(), "Waiting for plans on /clips/results");
+    RCLCPP_INFO(node->get_logger(), "Listening for override instructions on /supervisor_manager/instruction");
     RCLCPP_INFO(node->get_logger(), "Service available at /request_instruction");
     
     rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
 }
-
-
