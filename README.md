@@ -54,13 +54,13 @@ Currently, this validation stage is conceptual and extensible, designed to suppo
 
 ### 3. Instruction Dispatch Service
 
-The package exposes a ROS 2 service: /request_instruction (std_srvs/Trigger)
+The package exposes a ROS 2 service: `/request_instruction (std_srvs/Trigger)`
 
 
 Upon receiving a service request:
 
 - If a valid plan exists → returns the next instruction.
-- If no plan is loaded → returns a default fallback instruction: Justina listen keyword
+- If no plan is loaded → returns a default fallback instruction: `Justina listen keyword`
 
 
 This fallback ensures the robot remains operational and reactive even in the absence of a formal plan.
@@ -102,11 +102,6 @@ This mechanism enables adaptive corrections while maintaining global plan contin
 ## Future Extensions
 
 - Formal semantic plan validation.
-- Temporal constraint checking.
-- Plan priority arbitration.
-- Plan preemption policies.
-- Logging and execution traceability.
-
 ---
 
 ## Architectural Context
@@ -122,7 +117,7 @@ It is not responsible for executing instructions, only supervising and deliverin
 
 ---
 
-## Joshua Martinez
+## Author: Joshua Martinez
 
 Bio-Robotics Laboratory  
 Universidad Nacional Autónoma de México
