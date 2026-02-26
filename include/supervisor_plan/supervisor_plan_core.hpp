@@ -34,6 +34,7 @@ public:
   std::vector<std::string> big_steps_copy() const;
   size_t plan_size() const;
   size_t big_steps_size() const;
+  bool has_active_plan() const;
 
 private:
   // Protected state

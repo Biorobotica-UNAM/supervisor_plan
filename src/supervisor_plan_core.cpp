@@ -96,6 +96,12 @@ size_t SupervisorPlanCore::big_steps_size() const
   return big_steps_.size();
 }
 
+bool SupervisorPlanCore::has_active_plan() const
+{
+  std::lock_guard<std::mutex> lk(mtx_);
+  return has_active_plan_;
+}
+
 void SupervisorPlanCore::parse_raw_plan_locked()
 {
   // reset parsed state

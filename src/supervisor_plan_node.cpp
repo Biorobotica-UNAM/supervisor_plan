@@ -1,9 +1,11 @@
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
-#include <std_msgs/msg/int32.hpp>
 #include <atomic>
-
+#include <mutex>
 
 #include "supervisor_plan/supervisor_plan_core.hpp"
 
@@ -36,6 +38,12 @@ public:
                                                                           std::bind(&SupervisorPlanNode::on_instruction_cmd, this, std::placeholders::_1)
                                                                           );
 
+    allow_instruction_sub_ = this->create_subscription<std_msgs::msg::Empty>(
+      "/supervisor/supervisor_manager/allow_plan_instruction",
+      10,
+      std::bind(&SupervisorPlanNode::on_allow_instruction, this, std::placeholders::_1)
+    );
+
     service_ = this->create_service<std_srvs::srv::Trigger>("/request_instruction",
                                                             std::bind(&SupervisorPlanNode::on_request_instruction,
                                                             this,
@@ -44,26 +52,34 @@ public:
                                                         );
 
     publisher_ = this->create_publisher<std_msgs::msg::String>("/instruction_msg", 10);
+    active_plan_pub_ = this->create_publisher<std_msgs::msg::Bool>(
+      "/supervisor/supervisor_plan/active", 10);
 
     RCLCPP_INFO(this->get_logger(),"Listening for instruction commands on /supervisor/supervisor_manager/instruction_command (1=retry)");
+    RCLCPP_INFO(this->get_logger(),"Listening plan semaphores on /supervisor/supervisor_manager/allow_plan_instruction");
     RCLCPP_INFO(this->get_logger(), "Waiting for plans on /planning/clips/results");
     RCLCPP_INFO(this->get_logger(), "Listening for override instructions on /supervisor_manager/instruction");
     RCLCPP_INFO(this->get_logger(), "Service available at /request_instruction");
+    publishActivePlanStatus();
   }
 
 private:
   supervisor_plan::SupervisorPlanCore plan_core_;
 
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr instruction_cmd_sub_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr allow_instruction_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr plan_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr instruction_override_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr service_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr active_plan_pub_;
 
   // ===== Callbacks: update-only =====
   void on_plan_raw(const std_msgs::msg::String::SharedPtr msg)
   {
     plan_core_.update_raw_plan(msg->data);
+    plan_core_.process_pending_plan();
+    publishActivePlanStatus();
     RCLCPP_INFO(this->get_logger(), "Raw plan received (%zu chars)", msg->data.size());
   }
 
@@ -80,8 +96,51 @@ private:
   {
     (void)request;
 
+    if (!dispatch_token_available_.exchange(false))
+    {
+      response->success = false;
+      response->message = "blocked_by_manager";
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Instruction request rejected: waiting manager semaphore allow_plan_instruction"
+      );
+      return;
+    }
+
     // If a new raw plan arrived, parse it now (logic lives in PlanManager)
     plan_core_.process_pending_plan();
+    publishActivePlanStatus();
+
+    const bool retry = retry_requested_.exchange(false);
+    if (retry)
+    {
+      std::string retry_instruction;
+      {
+        std::lock_guard<std::mutex> lk(last_sent_mtx_);
+        retry_instruction = last_sent_instruction_;
+      }
+
+      if (!retry_instruction.empty())
+      {
+        std_msgs::msg::String out;
+        out.data = retry_instruction;
+        publisher_->publish(out);
+        response->success = true;
+        response->message = retry_instruction;
+        publishActivePlanStatus();
+        RCLCPP_WARN(
+          this->get_logger(),
+          "Retry active: sending same instruction again -> '%s'",
+          retry_instruction.c_str()
+        );
+        return;
+      }
+
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Retry was requested but there is no previous instruction. Sending next available instruction."
+      );
+    }
 
     auto res = plan_core_.next_instruction();
 
@@ -93,7 +152,20 @@ private:
     response->success = res.ok;
     response->message = res.instruction;
 
-    RCLCPP_INFO(this->get_logger(), "Sent instruction: %s", res.instruction.c_str());
+    {
+      std::lock_guard<std::mutex> lk(last_sent_mtx_);
+      last_sent_instruction_ = res.instruction;
+    }
+
+    publishActivePlanStatus();
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Instruction sent (ok=%s, had_plan=%s, plan_finished=%s): '%s'",
+      res.ok ? "true" : "false",
+      res.had_plan ? "true" : "false",
+      res.plan_finished ? "true" : "false",
+      res.instruction.c_str()
+    );
   }
 
   void on_instruction_cmd(const std_msgs::msg::Int32::SharedPtr msg)
@@ -105,8 +177,22 @@ private:
     }
   }
 
+  void on_allow_instruction(const std_msgs::msg::Empty::SharedPtr msg)
+  {
+    (void)msg;
+    dispatch_token_available_.store(true);
+    RCLCPP_DEBUG(this->get_logger(), "Semaphore received: plan can dispatch one instruction.");
+  }
+
+  void publishActivePlanStatus()
+  {
+    std_msgs::msg::Bool msg;
+    msg.data = plan_core_.has_active_plan();
+    active_plan_pub_->publish(msg);
+  }
 
   std::atomic_bool retry_requested_{false};
+  std::atomic_bool dispatch_token_available_{false};
   std::string last_sent_instruction_;
   std::mutex last_sent_mtx_;
 };
