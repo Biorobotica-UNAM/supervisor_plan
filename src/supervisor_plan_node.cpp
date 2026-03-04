@@ -1,227 +1,207 @@
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <atomic>
+#include <mutex>
+
+#include "supervisor_plan/supervisor_plan_core.hpp"
 
 #include <memory>
-#include <string>
-#include <sstream>
-#include <vector>
 
-#include <boost/algorithm/string.hpp>
-#include <boost/algorithm/string/split.hpp>
-
-using namespace std;
-
-class SupervisorPlanNode : public rclcpp::Node {
+class SupervisorPlanNode : public rclcpp::Node
+{
 public:
-    SupervisorPlanNode() : Node("supervisor_plan_node") {
-        RCLCPP_INFO(this->get_logger(), "supervisor_plan_node started");
+  SupervisorPlanNode()
+  : Node("supervisor_plan_node")
+  {
+    RCLCPP_INFO(this->get_logger(), "supervisor_plan_node started");
 
-        // Subscriber to receive full plans from CLIPS
-        plan_sub_ = this->create_subscription<std_msgs::msg::String>(
-            "/clips/clips/results", 10,
-            std::bind(&SupervisorPlanNode::planCallback, this, std::placeholders::_1)
-        );
+    plan_sub_ = this->create_subscription<std_msgs::msg::String>("/planning/clips/results",
+                                                                10,
+                                                                std::bind(&SupervisorPlanNode::on_plan_raw,
+                                                                this,
+                                                                std::placeholders::_1)
+                                                                );
 
-        // Subscriber to receive instruction overrides
-        instruction_override_sub_ = this->create_subscription<std_msgs::msg::String>(
-            "/supervisor_manager/instruction", 10,
-            std::bind(&SupervisorPlanNode::instructionOverrideCallback, this, std::placeholders::_1)
-        );
+    instruction_override_sub_ = this->create_subscription<std_msgs::msg::String>("/supervisor/supervisor_manager/instruction",
+                                                                                10,
+                                                                                std::bind(&SupervisorPlanNode::on_override_raw,
+                                                                                this,
+                                                                                std::placeholders::_1)
+                                                                                );
 
-        // Service for the robot to request the next instruction
-        service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/request_instruction",
-            std::bind(&SupervisorPlanNode::handleInstructionRequest, this,
-                     std::placeholders::_1, std::placeholders::_2));
+    instruction_cmd_sub_ = this->create_subscription<std_msgs::msg::Int32>("/supervisor/supervisor_manager/instruction_command",
+                                                                          10,
+                                                                          std::bind(&SupervisorPlanNode::on_instruction_cmd, this, std::placeholders::_1)
+                                                                          );
 
-        // Publisher to send instructions
-        publisher_ = this->create_publisher<std_msgs::msg::String>("/instruction_msg", 10);
+    allow_instruction_sub_ = this->create_subscription<std_msgs::msg::Empty>(
+      "/supervisor/supervisor_manager/allow_plan_instruction",
+      10,
+      std::bind(&SupervisorPlanNode::on_allow_instruction, this, std::placeholders::_1)
+    );
 
-        // Initialize plan state
-        current_plan_index_ = -1;
-        instruction_counter_ = 0;
-        has_active_plan_ = false;
-        override_instruction_ = "";
-        
-        RCLCPP_INFO(this->get_logger(), "Supervisor Plan initialized");
-    }
+    service_ = this->create_service<std_srvs::srv::Trigger>("/request_instruction",
+                                                            std::bind(&SupervisorPlanNode::on_request_instruction,
+                                                            this,
+                                                            std::placeholders::_1,
+                                                            std::placeholders::_2)
+                                                        );
+
+    publisher_ = this->create_publisher<std_msgs::msg::String>("/instruction_msg", 10);
+    active_plan_pub_ = this->create_publisher<std_msgs::msg::Bool>(
+      "/supervisor/supervisor_plan/active", 10);
+
+    RCLCPP_INFO(this->get_logger(),"Listening for instruction commands on /supervisor/supervisor_manager/instruction_command (1=retry)");
+    RCLCPP_INFO(this->get_logger(),"Listening plan semaphores on /supervisor/supervisor_manager/allow_plan_instruction");
+    RCLCPP_INFO(this->get_logger(), "Waiting for plans on /planning/clips/results");
+    RCLCPP_INFO(this->get_logger(), "Listening for override instructions on /supervisor_manager/instruction");
+    RCLCPP_INFO(this->get_logger(), "Service available at /request_instruction");
+    publishActivePlanStatus();
+  }
 
 private:
-    // Variables to store the current plan
-    std::vector<std::string> current_plan_;
-    int current_plan_index_;
-    int instruction_counter_;
-    bool has_active_plan_;
-    std::string override_instruction_;
-    
-    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr plan_sub_;
-    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr instruction_override_sub_;
-    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr service_;
-    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
+  supervisor_plan::SupervisorPlanCore plan_core_;
 
-    // --------------------------
-    // INSTRUCTION OVERRIDE CALLBACK
-    // --------------------------
-    void instructionOverrideCallback(const std_msgs::msg::String::SharedPtr msg) {
-        if (!msg->data.empty()) {
-            override_instruction_ = msg->data;
-            RCLCPP_INFO(this->get_logger(), 
-                        "Override instruction received: %s", 
-                        override_instruction_.c_str());
-        }
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr instruction_cmd_sub_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr allow_instruction_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr plan_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr instruction_override_sub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr service_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr active_plan_pub_;
+
+  // ===== Callbacks: update-only =====
+  void on_plan_raw(const std_msgs::msg::String::SharedPtr msg)
+  {
+    plan_core_.update_raw_plan(msg->data);
+    plan_core_.process_pending_plan();
+    publishActivePlanStatus();
+    RCLCPP_INFO(this->get_logger(), "Raw plan received (%zu chars)", msg->data.size());
+  }
+
+  void on_override_raw(const std_msgs::msg::String::SharedPtr msg)
+  {
+    plan_core_.update_override_instruction(msg->data);
+    RCLCPP_INFO(this->get_logger(), "Override received (%zu chars)", msg->data.size());
+  }
+
+  // ===== Service callback: delegates all logic to PlanManager =====
+  void on_request_instruction(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+  {
+    (void)request;
+
+    if (!dispatch_token_available_.exchange(false))
+    {
+      response->success = false;
+      response->message = "blocked_by_manager";
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Instruction request rejected: waiting manager semaphore allow_plan_instruction"
+      );
+      return;
     }
 
-    // --------------------------
-    // CLIPS TOPIC CALLBACK
-    // --------------------------
-    void planCallback(const std_msgs::msg::String::SharedPtr msg) {
-        std::string full_plan = msg->data;
-        if (full_plan.empty()) {
-            RCLCPP_WARN(this->get_logger(), "Empty plan received");
-            return;
-        }
+    // If a new raw plan arrived, parse it now (logic lives in PlanManager)
+    plan_core_.process_pending_plan();
+    publishActivePlanStatus();
 
-        RCLCPP_INFO(this->get_logger(), "Plan received: %s", full_plan.c_str());
+    const bool retry = retry_requested_.exchange(false);
+    if (retry)
+    {
+      std::string retry_instruction;
+      {
+        std::lock_guard<std::mutex> lk(last_sent_mtx_);
+        retry_instruction = last_sent_instruction_;
+      }
 
-        // Clear previous plan
-        current_plan_.clear();
-        
-        std::vector<std::string> lines;
-        boost::split(lines, full_plan, boost::is_any_of("\n"));
-
-        for (const string& line : lines) {
-            if (line.find("Paso") != string::npos) {
-                // This line corresponds to a plan step
-                vector<string> tokens;
-                boost::algorithm::split(tokens, line, boost::algorithm::is_any_of(" "));
-                
-                if (tokens.size() > 5) {
-                    // Rebuild instruction (skip "Paso X:")
-                    string instruction = "";
-                    bool start_collecting = false;
-                    
-                    for (size_t i = 0; i < tokens.size(); i++) {                        
-                        if (start_collecting)
-                        {
-                            instruction += tokens[i];
-                            if (i < tokens.size() - 1) instruction += " ";
-                            if (tokens[i].find("Justina") != string::npos) i++;
-
-                        }
-                        // Start collecting after the step number
-                        if (i >= 1 && tokens[i].find(":") != string::npos)
-                        {
-                            start_collecting = true;
-                        }
-                    }
-                    
-                    if (!instruction.empty()) {
-                        current_plan_.push_back(instruction);
-                        RCLCPP_DEBUG(this->get_logger(), "Instruction added: %s", instruction.c_str());
-                    }
-                }                
-            }
-        }
-
-        // Configure robot state if a valid plan was received
-        if (!current_plan_.empty()) {
-            current_plan_index_ = 0;
-            instruction_counter_ = 0;
-            has_active_plan_ = true;
-            
-            RCLCPP_INFO(this->get_logger(),
-                        "Plan processed: %zu instructions received",
-                        current_plan_.size());
-            RCLCPP_INFO(this->get_logger(), "Plan ready for execution");
-        } else {
-            RCLCPP_WARN(this->get_logger(),
-                        "Plan received but no valid instructions were found");
-        }
-    }
-
-    // --------------------------
-    // SERVICE HANDLER
-    // --------------------------
-    void handleInstructionRequest(
-        const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-        
-        (void)request;  // Request is not used
-
-        RCLCPP_INFO(this->get_logger(), "Instruction request received");
-
-        // Check if there's an override instruction
-        if (!override_instruction_.empty()) {
-            std::string instruction = override_instruction_;
-            override_instruction_ = "";  // Clear after using
-            
-            // Publish instruction on topic
-            auto instruction_msg = std_msgs::msg::String();
-            instruction_msg.data = instruction;
-            publisher_->publish(instruction_msg);
-            
-            // Fill service response
-            response->success = true;
-            response->message = instruction;
-            
-            RCLCPP_INFO(this->get_logger(),
-                        "Override instruction sent: %s",
-                        instruction.c_str());
-            return;
-        }
-
-        // Check if there is an active plan
-        if (!has_active_plan_ || current_plan_.empty()) {
-            RCLCPP_WARN(this->get_logger(), "NoPlanAssigned: send a default instruction for wait for the keyword"); 
-            response->message = "Justina listen keyword";
-            response->success = true;
-            return;
-        }
-
-        // Get next instruction
-        std::string instruction = current_plan_[instruction_counter_];
-        
-        // Increment counter for next request
-        instruction_counter_++;
-        
-        // Publish instruction on topic (optional)
-        auto instruction_msg = std_msgs::msg::String();
-        instruction_msg.data = instruction;
-        publisher_->publish(instruction_msg);
-        
-        // Fill service response
+      if (!retry_instruction.empty())
+      {
+        std_msgs::msg::String out;
+        out.data = retry_instruction;
+        publisher_->publish(out);
         response->success = true;
-        response->message = instruction;
-        
-        RCLCPP_INFO(this->get_logger(),
-                    "Instruction %d/%zu sent: %s",
-                    instruction_counter_,
-                    current_plan_.size(),
-                    instruction.c_str());
-        
-        // Check if plan execution is complete
-        if (instruction_counter_ >= (int)current_plan_.size()) {
-            has_active_plan_ = false;
-            RCLCPP_INFO(this->get_logger(),
-                        "Last instruction of the plan has been sent");
-        }
+        response->message = retry_instruction;
+        publishActivePlanStatus();
+        RCLCPP_WARN(
+          this->get_logger(),
+          "Retry active: sending same instruction again -> '%s'",
+          retry_instruction.c_str()
+        );
+        return;
+      }
+
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Retry was requested but there is no previous instruction. Sending next available instruction."
+      );
     }
+
+    auto res = plan_core_.next_instruction();
+
+    // Publish and respond
+    std_msgs::msg::String out;
+    out.data = res.instruction;
+    publisher_->publish(out);
+
+    response->success = res.ok;
+    response->message = res.instruction;
+
+    {
+      std::lock_guard<std::mutex> lk(last_sent_mtx_);
+      last_sent_instruction_ = res.instruction;
+    }
+
+    publishActivePlanStatus();
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Instruction sent (ok=%s, had_plan=%s, plan_finished=%s): '%s'",
+      res.ok ? "true" : "false",
+      res.had_plan ? "true" : "false",
+      res.plan_finished ? "true" : "false",
+      res.instruction.c_str()
+    );
+  }
+
+  void on_instruction_cmd(const std_msgs::msg::Int32::SharedPtr msg)
+  {
+    if (msg->data == 1)
+    {
+      retry_requested_.store(true);
+      RCLCPP_WARN(this->get_logger(), "Retry requested (command=1). Next /request_instruction will resend last instruction.");
+    }
+  }
+
+  void on_allow_instruction(const std_msgs::msg::Empty::SharedPtr msg)
+  {
+    (void)msg;
+    dispatch_token_available_.store(true);
+    RCLCPP_DEBUG(this->get_logger(), "Semaphore received: plan can dispatch one instruction.");
+  }
+
+  void publishActivePlanStatus()
+  {
+    std_msgs::msg::Bool msg;
+    msg.data = plan_core_.has_active_plan();
+    active_plan_pub_->publish(msg);
+  }
+
+  std::atomic_bool retry_requested_{false};
+  std::atomic_bool dispatch_token_available_{false};
+  std::string last_sent_instruction_;
+  std::mutex last_sent_mtx_;
 };
 
-// --------------------------
-// MAIN
-// --------------------------
-int main(int argc, char **argv) {
-    rclcpp::init(argc, argv);
-    auto node = std::make_shared<SupervisorPlanNode>();
-    
-    RCLCPP_INFO(node->get_logger(), "Plan Manager Node started");
-    RCLCPP_INFO(node->get_logger(), "Waiting for plans on /clips/results");
-    RCLCPP_INFO(node->get_logger(), "Listening for override instructions on /supervisor_manager/instruction");
-    RCLCPP_INFO(node->get_logger(), "Service available at /request_instruction");
-    
-    rclcpp::spin(node);
-    rclcpp::shutdown();
-    return 0;
+int main(int argc, char **argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<SupervisorPlanNode>();
+  rclcpp::spin(node);
+  rclcpp::shutdown();
+  return 0;
 }
