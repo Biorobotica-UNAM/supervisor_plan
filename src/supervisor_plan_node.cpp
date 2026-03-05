@@ -54,10 +54,13 @@ public:
     publisher_ = this->create_publisher<std_msgs::msg::String>("/instruction_msg", 10);
     active_plan_pub_ = this->create_publisher<std_msgs::msg::Bool>(
       "/supervisor/supervisor_plan/active", 10);
+    plan_ready_pub_ = this->create_publisher<std_msgs::msg::Empty>(
+      "/supervisor/supervisor_plan/plan_ready", 10);
 
     RCLCPP_INFO(this->get_logger(),"Listening for instruction commands on /supervisor/supervisor_manager/instruction_command (1=retry)");
     RCLCPP_INFO(this->get_logger(),"Listening plan semaphores on /supervisor/supervisor_manager/allow_plan_instruction");
     RCLCPP_INFO(this->get_logger(), "Waiting for plans on /planning/clips/results");
+    RCLCPP_INFO(this->get_logger(), "Publishing plan-ready events on /supervisor/supervisor_plan/plan_ready");
     RCLCPP_INFO(this->get_logger(), "Listening for override instructions on /supervisor_manager/instruction");
     RCLCPP_INFO(this->get_logger(), "Service available at /request_instruction");
     publishActivePlanStatus();
@@ -73,12 +76,16 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr service_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr active_plan_pub_;
+  rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr plan_ready_pub_;
 
   // ===== Callbacks: update-only =====
   void on_plan_raw(const std_msgs::msg::String::SharedPtr msg)
   {
     plan_core_.update_raw_plan(msg->data);
     plan_core_.process_pending_plan();
+    if (plan_core_.has_active_plan()) {
+      notifyPlanReady();
+    }
     publishActivePlanStatus();
     RCLCPP_INFO(this->get_logger(), "Raw plan received (%zu chars)", msg->data.size());
   }
@@ -189,6 +196,12 @@ private:
     std_msgs::msg::Bool msg;
     msg.data = plan_core_.has_active_plan();
     active_plan_pub_->publish(msg);
+  }
+
+  void notifyPlanReady()
+  {
+    plan_ready_pub_->publish(std_msgs::msg::Empty{});
+    RCLCPP_INFO(this->get_logger(), "Plan ready notification sent to manager");
   }
 
   std::atomic_bool retry_requested_{false};
