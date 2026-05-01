@@ -19,6 +19,12 @@ public:
   {
     RCLCPP_INFO(this->get_logger(), "supervisor_plan_node started");
 
+	rewind_sub_ = create_subscription<std_msgs::msg::Empty>("/supervisor/supervisor_plan/rewind_one", 10,
+													  		[this](std_msgs::msg::Empty::SharedPtr) {
+															plan_core_.rewind_one();
+															RCLCPP_WARN(get_logger(), "Plan rewound one instruction.");
+													  	});
+
     plan_sub_ = this->create_subscription<std_msgs::msg::String>("/planning/clips/results",
                                                                 10,
                                                                 std::bind(&SupervisorPlanNode::on_plan_raw,
@@ -71,6 +77,7 @@ private:
 
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr instruction_cmd_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr allow_instruction_sub_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr rewind_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr plan_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr instruction_override_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr service_;

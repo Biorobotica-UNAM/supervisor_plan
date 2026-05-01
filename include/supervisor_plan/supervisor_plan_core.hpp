@@ -22,6 +22,8 @@ public:
 
   SupervisorPlanCore() = default;
 
+  void rewind_one();
+
   // ===== Update-only (callbacks) =====
   void update_raw_plan(const std::string& raw_plan);
   void update_override_instruction(const std::string& instruction);

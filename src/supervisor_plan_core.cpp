@@ -6,6 +6,15 @@
 namespace supervisor_plan
 {
 
+void SupervisorPlanCore::rewind_one()
+{
+  std::lock_guard<std::mutex> lk(mtx_);
+  if (instruction_counter_ > 0) {
+    instruction_counter_--;
+    has_active_plan_ = true;
+  }
+}
+
 void SupervisorPlanCore::update_raw_plan(const std::string& raw_plan)
 {
   std::lock_guard<std::mutex> lk(mtx_);
