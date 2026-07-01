@@ -63,7 +63,7 @@ public:
     plan_ready_pub_ = this->create_publisher<std_msgs::msg::Empty>(
       "/supervisor/supervisor_plan/plan_ready", 10);
 
-    RCLCPP_INFO(this->get_logger(),"Listening for instruction commands on /supervisor/supervisor_manager/instruction_command (1=retry)");
+    RCLCPP_INFO(this->get_logger(),"Listening for instruction commands on /supervisor/supervisor_manager/instruction_command (1=retry, negative=skip N)");
     RCLCPP_INFO(this->get_logger(),"Listening plan semaphores on /supervisor/supervisor_manager/allow_plan_instruction");
     RCLCPP_INFO(this->get_logger(), "Waiting for plans on /planning/clips/results");
     RCLCPP_INFO(this->get_logger(), "Publishing plan-ready events on /supervisor/supervisor_plan/plan_ready");
@@ -188,6 +188,15 @@ private:
     {
       retry_requested_.store(true);
       RCLCPP_WARN(this->get_logger(), "Retry requested (command=1). Next /request_instruction will resend last instruction.");
+    } else if (msg->data < 0) {
+      const int skip_count = -msg->data;
+      plan_core_.skip_next(skip_count);
+      publishActivePlanStatus();
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Skip requested (command=%d). Skipped %d normal instruction(s).",
+        msg->data,
+        skip_count);
     }
   }
 

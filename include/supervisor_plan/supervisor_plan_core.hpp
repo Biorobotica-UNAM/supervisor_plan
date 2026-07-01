@@ -23,6 +23,7 @@ public:
   SupervisorPlanCore() = default;
 
   void rewind_one();
+  void skip_next(int count);
 
   // ===== Update-only (callbacks) =====
   void update_raw_plan(const std::string& raw_plan);
