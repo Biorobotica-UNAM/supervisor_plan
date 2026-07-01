@@ -15,6 +15,24 @@ void SupervisorPlanCore::rewind_one()
   }
 }
 
+void SupervisorPlanCore::skip_next(int count)
+{
+  if (count <= 0) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lk(mtx_);
+  if (!has_active_plan_ || plan_instructions_.empty()) {
+    return;
+  }
+
+  instruction_counter_ += count;
+  if (instruction_counter_ >= static_cast<int>(plan_instructions_.size())) {
+    instruction_counter_ = static_cast<int>(plan_instructions_.size());
+    has_active_plan_ = false;
+  }
+}
+
 void SupervisorPlanCore::update_raw_plan(const std::string& raw_plan)
 {
   std::lock_guard<std::mutex> lk(mtx_);
