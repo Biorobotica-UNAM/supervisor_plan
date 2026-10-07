@@ -9,6 +9,8 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(clips_interfaces REQUIRED)
+find_package(nlohmann_json REQUIRED)
 find_package(Boost REQUIRED)  # solo headers (boost::algorithm)
 
 add_executable(supervisor_plan_node
@@ -25,6 +27,8 @@ ament_target_dependencies(supervisor_plan_node
   rclcpp
   std_msgs
   std_srvs
+  clips_interfaces
+  nlohmann_json
 )
 
 # Boost headers only -> no target_link_libraries necesario

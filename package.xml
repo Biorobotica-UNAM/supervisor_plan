@@ -12,6 +12,8 @@
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>clips_interfaces</depend>
+  <depend>nlohmann_json</depend>
 
     <depend>boost</depend>
 

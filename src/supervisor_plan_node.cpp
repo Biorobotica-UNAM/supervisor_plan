@@ -5,11 +5,15 @@
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <atomic>
+#include <clips_interfaces/srv/string.hpp>
+#include <nlohmann/json.hpp>
 #include <mutex>
 
 #include "supervisor_plan/supervisor_plan_core.hpp"
 
 #include <memory>
+#include <limits>
+#include <stdexcept>
 
 class SupervisorPlanNode : public rclcpp::Node
 {
@@ -57,6 +61,50 @@ public:
                                                             std::placeholders::_2)
                                                         );
 
+    prepare_cycle_service_ = this->create_service<clips_interfaces::srv::String>(
+      "/supervisor/supervisor_plan/prepare_cycle",
+      [this](const clips_interfaces::srv::String::Request::SharedPtr req,
+             clips_interfaces::srv::String::Response::SharedPtr res) {
+        try {
+          const auto operations = nlohmann::json::parse(req->data);
+          if (!operations.is_array()) {throw std::runtime_error("expected operation array");}
+          // Validate the entire batch before mutating the plan.
+          for (const auto & op : operations) {
+            if (!op.is_object() || op.size() != 1 ||
+                !(op.contains("command") || op.contains("override") || op.contains("rewind"))) {
+              throw std::runtime_error("invalid plan operation");
+            }
+            if (op.contains("command")) {
+              const int command = op.at("command").get<int>();
+              if (command == std::numeric_limits<int>::min() || command == 0 || command > 1) {
+                throw std::runtime_error("invalid instruction command");
+              }
+            }
+            if (op.contains("override") && op.at("override").get<std::string>().empty()) {
+              throw std::runtime_error("empty override");
+            }
+            if (op.contains("rewind") && !op.at("rewind").get<bool>()) {
+              throw std::runtime_error("invalid rewind");
+            }
+          }
+          for (const auto & op : operations) {
+            if (op.contains("rewind")) {plan_core_.rewind_one();}
+            if (op.contains("override")) {
+              plan_core_.update_override_instruction(op.at("override").get<std::string>());
+            }
+            if (op.contains("command")) {
+              const int command = op.at("command").get<int>();
+              if (command == 1) {retry_requested_.store(true);}
+              else if (command < 0) {plan_core_.skip_next(-command);}
+            }
+          }
+          dispatch_token_available_.store(true);
+          res->data = "ready";
+        } catch (const std::exception & ex) {
+          res->data = std::string("rejected: ") + ex.what();
+        }
+      });
+
     publisher_ = this->create_publisher<std_msgs::msg::String>("/instruction_msg", 10);
     active_plan_pub_ = this->create_publisher<std_msgs::msg::Bool>(
       "/supervisor/supervisor_plan/active", 10);
@@ -81,6 +129,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr plan_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr instruction_override_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr service_;
+  rclcpp::Service<clips_interfaces::srv::String>::SharedPtr prepare_cycle_service_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr active_plan_pub_;
   rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr plan_ready_pub_;
@@ -123,7 +172,6 @@ private:
 
     // If a new raw plan arrived, parse it now (logic lives in PlanManager)
     plan_core_.process_pending_plan();
-    publishActivePlanStatus();
 
     const bool retry = retry_requested_.exchange(false);
     if (retry)
