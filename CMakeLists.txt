@@ -45,4 +45,10 @@ install(DIRECTORY include/
 ament_export_include_directories(include)
 ament_export_dependencies(rclcpp std_msgs std_srvs)
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_arrival_destination test/test_arrival_destination.cpp src/supervisor_plan_core.cpp)
+  target_include_directories(test_arrival_destination PRIVATE include)
+endif()
+
 ament_package()

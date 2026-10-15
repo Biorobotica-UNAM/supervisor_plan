@@ -1,10 +1,36 @@
 #include "supervisor_plan/supervisor_plan_core.hpp"
+#include <algorithm>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/split.hpp>
 
 namespace supervisor_plan
 {
+
+bool SupervisorPlanCore::update_next_arrival(const std::string & original, const std::string & corrected)
+{
+  std::lock_guard<std::mutex> lk(mtx_);
+  if (instruction_counter_ < 0 || instruction_counter_ >= static_cast<int>(plan_instructions_.size())) {
+    return false;
+  }
+  auto canonical = [](std::string value) {
+    boost::algorithm::trim(value);
+    boost::algorithm::to_lower(value);
+    std::replace(value.begin(), value.end(), ' ', '_');
+    return value;
+  };
+  auto & instruction = plan_instructions_[instruction_counter_];
+  const std::string prefix = "Justina say I have arrived at ";
+  if (!boost::algorithm::istarts_with(instruction, prefix)) {return false;}
+  auto destination = instruction.substr(prefix.size());
+  std::string punctuation;
+  if (!destination.empty() && (destination.back() == '.' || destination.back() == '!')) {
+    punctuation = destination.back(); destination.pop_back();
+  }
+  if (canonical(destination) != canonical(original)) {return false;}
+  instruction = instruction.substr(0, prefix.size()) + corrected + punctuation;
+  return true;
+}
 
 void SupervisorPlanCore::rewind_one()
 {

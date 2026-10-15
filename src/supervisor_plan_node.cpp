@@ -71,7 +71,8 @@ public:
           // Validate the entire batch before mutating the plan.
           for (const auto & op : operations) {
             if (!op.is_object() || op.size() != 1 ||
-                !(op.contains("command") || op.contains("override") || op.contains("rewind"))) {
+                !(op.contains("command") || op.contains("override") || op.contains("rewind") ||
+                  op.contains("arrival_destination"))) {
               throw std::runtime_error("invalid plan operation");
             }
             if (op.contains("command")) {
@@ -86,8 +87,24 @@ public:
             if (op.contains("rewind") && !op.at("rewind").get<bool>()) {
               throw std::runtime_error("invalid rewind");
             }
+            if (op.contains("arrival_destination")) {
+              const auto & arrival = op.at("arrival_destination");
+              for (const auto * key : {"original", "corrected"}) {
+                const auto value = arrival.at(key).get<std::string>();
+                if (value.empty() || value.find_first_of("\r\n") != std::string::npos) {
+                  throw std::runtime_error("invalid arrival destination");
+                }
+              }
+            }
           }
           for (const auto & op : operations) {
+            if (op.contains("arrival_destination")) {
+              const auto & arrival = op.at("arrival_destination");
+              const bool updated = plan_core_.update_next_arrival(
+                arrival.at("original").get<std::string>(), arrival.at("corrected").get<std::string>());
+              RCLCPP_INFO(get_logger(), "[PlanMutation] next arrival announcement updated=%s",
+                updated ? "true" : "false");
+            }
             if (op.contains("rewind")) {plan_core_.rewind_one();}
             if (op.contains("override")) {
               plan_core_.update_override_instruction(op.at("override").get<std::string>());

@@ -24,6 +24,7 @@ public:
 
   void rewind_one();
   void skip_next(int count);
+  bool update_next_arrival(const std::string & original, const std::string & corrected);
 
   // ===== Update-only (callbacks) =====
   void update_raw_plan(const std::string& raw_plan);
