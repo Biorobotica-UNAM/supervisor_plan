@@ -59,7 +59,7 @@ public:
 
     publisher_ = this->create_publisher<std_msgs::msg::String>("/instruction_msg", 10);
     active_plan_pub_ = this->create_publisher<std_msgs::msg::Bool>(
-      "/supervisor/supervisor_plan/active", 10);
+      "/supervisor/supervisor_plan/active", rclcpp::QoS(10).transient_local());
     plan_ready_pub_ = this->create_publisher<std_msgs::msg::Empty>(
       "/supervisor/supervisor_plan/plan_ready", 10);
 
